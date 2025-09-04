@@ -1,6 +1,6 @@
 {
-  "name": "chatbot-flowchart-app",
-  "version": "0.1.0",
+  "name": "customer-journey-chatbot",
+  "version": "1.0.0",
   "private": true,
   "dependencies": {
     "firebase": "^10.12.3",
@@ -33,3 +33,4 @@
     ]
   }
 }
+
