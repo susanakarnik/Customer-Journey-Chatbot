@@ -1,0 +1,222 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, doc, addDoc, onSnapshot, collection, query, orderBy, setDoc } from 'firebase/firestore';
+
+// Main component for the entire application
+const App = () => {
+    // Global variables for Firebase configuration from the Canvas environment
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    const [chatHistory, setChatHistory] = useState([]);
+    const [currentOptions, setCurrentOptions] = useState({});
+    const [db, setDb] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false);
+
+    // Initial menu options based on flowchart
+    const mainMenu = {
+        "Shop our Products": "products",
+        "Explore our Services": "services",
+        "Common Questions": "faqs",
+        "Talk to an Agent": "agent"
+    };
+    const productMenu = {
+        "Apparel & Fashion": "apparel",
+        "Bags, Shoes, & Accessories": "accessories"
+    };
+    const serviceMenu = {
+        "Order Status & Tracking": "order_status",
+        "Return & Exchanges": "returns"
+    };
+
+    // Initialize Firebase and Auth
+    useEffect(() => {
+        const initFirebase = async () => {
+            try {
+                const app = initializeApp(firebaseConfig);
+                const authInstance = getAuth(app);
+                const firestoreInstance = getFirestore(app);
+
+                if (initialAuthToken) {
+                    await signInWithCustomToken(authInstance, initialAuthToken);
+                } else {
+                    await signInAnonymously(authInstance);
+                }
+
+                setUserId(authInstance.currentUser.uid);
+                setDb(firestoreInstance);
+                setIsAuthReady(true);
+            } catch (e) {
+                console.error("Error initializing Firebase:", e);
+            }
+        };
+
+        initFirebase();
+    }, []);
+
+    // Listen for chat history changes from Firestore
+    useEffect(() => {
+        if (!db || !isAuthReady || !userId) return;
+
+        const q = query(collection(db, `/artifacts/${appId}/users/${userId}/chat-history`), orderBy('timestamp'));
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+            const newMessages = [];
+            snapshot.docChanges().forEach(change => {
+                if (change.type === 'added') {
+                    const message = change.doc.data();
+                    newMessages.push(message);
+                }
+            });
+
+            if (newMessages.length > 0) {
+                setChatHistory(prevHistory => [...prevHistory, ...newMessages]);
+            }
+        }, (error) => {
+            console.error("Error fetching chat history:", error);
+        });
+
+        // Initial bot message
+        setChatHistory([{ sender: 'bot', text: "Hello! How can I help you today?" }]);
+        setCurrentOptions(mainMenu);
+
+        return () => unsubscribe();
+    }, [db, isAuthReady, userId]);
+
+    // Handle user's choice and update Firestore
+    const handleUserChoice = async (label, value) => {
+        if (!db || !userId) return;
+
+        // Add user message
+        const userMessage = { sender: 'user', text: label, timestamp: Date.now() };
+        await addDoc(collection(db, `/artifacts/${appId}/users/${userId}/chat-history`), userMessage);
+
+        // Add a placeholder bot thinking message
+        const thinkingMessage = { sender: 'bot', text: "Thinking...", timestamp: Date.now() + 1 };
+        const botRef = await addDoc(collection(db, `/artifacts/${appId}/users/${userId}/chat-history`), thinkingMessage);
+
+        // Determine bot response based on choice
+        let botResponseText = "";
+        let nextOptions = {};
+
+        switch (value) {
+            case "products":
+                botResponseText = "What type of product are you interested in?";
+                nextOptions = productMenu;
+                break;
+            case "services":
+                botResponseText = "Which service can I help you with?";
+                nextOptions = serviceMenu;
+                break;
+            case "faqs":
+                botResponseText = "I can answer common questions. What is your question about?";
+                nextOptions = { "Back to Main Menu": "main" };
+                break;
+            case "agent":
+                botResponseText = "Connecting you with a live agent now.";
+                nextOptions = { "Back to Main Menu": "main" };
+                break;
+            case "apparel":
+                botResponseText = "Displaying apparel and fashion options.";
+                nextOptions = {
+                    "Size": "size",
+                    "Color": "color",
+                    "Price": "price",
+                    "Brand": "brand",
+                    "Back to Products Menu": "products"
+                };
+                break;
+            case "accessories":
+                botResponseText = "Displaying bags, shoes, and accessories options.";
+                nextOptions = {
+                    "Size": "size",
+                    "Color": "color",
+                    "Price": "price",
+                    "Brand": "brand",
+                    "Back to Products Menu": "products"
+                };
+                break;
+            case "order_status":
+                botResponseText = "Please enter your order number to track your package.";
+                nextOptions = { "Back to Services Menu": "services" };
+                break;
+            case "returns":
+                botResponseText = "I can help with that. Are you looking to initiate a return or learn about our policy?";
+                nextOptions = { "Back to Services Menu": "services" };
+                break;
+            case "main":
+                botResponseText = "Hello! How can I help you today?";
+                nextOptions = mainMenu;
+                break;
+            default:
+                botResponseText = "I'm not sure how to respond to that. Please select an option.";
+                nextOptions = mainMenu;
+                break;
+        }
+
+        // Update the thinking message to the actual response and update the options
+        await setDoc(botRef, { text: botResponseText, timestamp: Date.now() + 2 }, { merge: true });
+        setCurrentOptions(nextOptions);
+    };
+
+    const handleBack = (menuName) => {
+        if (menuName === 'products') {
+            handleUserChoice('Back to Products Menu', 'products');
+        } else if (menuName === 'services') {
+            handleUserChoice('Back to Services Menu', 'services');
+        } else {
+            handleUserChoice('Back to Main Menu', 'main');
+        }
+    };
+    
+    // Auto-scroll chat to the bottom
+    useEffect(() => {
+        const chatElement = document.getElementById('chat-container');
+        if (chatElement) {
+            chatElement.scrollTop = chatElement.scrollHeight;
+        }
+    }, [chatHistory]);
+
+    return (
+        <div className="flex items-center justify-center min-h-screen p-4 bg-gray-100">
+            <div className="bg-white rounded-3xl shadow-2xl p-6 w-full max-w-lg flex flex-col h-[80vh] overflow-hidden">
+                <h1 className="text-3xl font-bold text-center text-gray-800 mb-4">Gemini Chatbot</h1>
+                
+                <div id="chat-container" className="flex-1 overflow-y-auto space-y-4 p-4 rounded-xl bg-gray-50 border border-gray-100 mb-4">
+                    {chatHistory.map((msg, index) => (
+                        <div
+                            key={index}
+                            className={`p-4 max-w-xs break-words shadow-sm ${msg.sender === 'user' ? 'ml-auto text-right bg-blue-500 text-white rounded-t-xl rounded-bl-xl' : 'mr-auto bg-white text-gray-800 rounded-b-xl rounded-tr-xl'}`}
+                        >
+                            {msg.text}
+                        </div>
+                    ))}
+                </div>
+                
+                <div className="flex flex-col space-y-2">
+                    {Object.keys(currentOptions).map(key => (
+                        <button
+                            key={key}
+                            className="w-full py-3 px-4 bg-gray-200 text-gray-800 font-semibold rounded-full hover:bg-gray-300 transition-colors duration-200"
+                            onClick={() => handleUserChoice(key, currentOptions[key])}
+                        >
+                            {key}
+                        </button>
+                    ))}
+                    {Object.keys(currentOptions).length > 0 && currentOptions["Back to Main Menu"] === undefined && (
+                        <button
+                            className="w-full py-3 px-4 bg-gray-100 text-gray-600 font-semibold rounded-full hover:bg-gray-200 transition-colors duration-200 mt-2"
+                            onClick={() => handleBack(currentOptions)}
+                        >
+                            Back
+                        </button>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
+export default App;
